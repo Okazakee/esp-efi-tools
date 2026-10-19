@@ -86,16 +86,40 @@ roundtrip_possible() {
 	return 0
 }
 
+# install.sh insists on a real EDK2 shell, which some distributions do not ship
+# (Ubuntu packages none at all). Rather than skip the round trip everywhere,
+# fall back to a dummy file: this test is about *where* files land and whether
+# uninstall cleans up, not about the shell's contents.
+have_shell() {
+	local c
+	for c in \
+		/usr/share/edk2-shell/x64/Shell_Full.efi \
+		/usr/share/edk2/x64/Shell_Full.efi \
+		/usr/share/OVMF/Shell_Full.efi \
+		/usr/share/OVMF/Shell.efi; do
+		[ -f "$c" ] && return 0
+	done
+	return 1
+}
+
 if roundtrip_possible; then
 	IMG="$WORK/esp.img"
 	MNT="$WORK/mnt"
 	truncate -s 64M "$IMG"
 	mkfs.vfat "$IMG" >/dev/null
 	mkdir -p "$MNT"
+
+	shell_args=()
+	if ! have_shell; then
+		: >"$WORK/dummy-shell.efi"
+		shell_args=(--shell "$WORK/dummy-shell.efi")
+		printf '  ..   no EDK2 shell installed here, so using a dummy to test placement\n'
+	fi
+
 	if mount -o loop,rw "$IMG" "$MNT" 2>/dev/null; then
 		CLEANUP_MNT="$MNT"
 
-		./install.sh --esp "$MNT" --no-boot-entry >/dev/null ||
+		./install.sh --esp "$MNT" --no-boot-entry ${shell_args[@]+"${shell_args[@]}"} >/dev/null ||
 			fail "install.sh failed on a real FAT mount"
 		ok "install.sh completed on a real FAT mount"
 
