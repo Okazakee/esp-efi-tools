@@ -76,6 +76,9 @@ expect_failure "refuses a subdirectory of a mount point" "not itself a mount poi
 # bug 1 was not caught here: this path passes --esp, bypassing auto-detection.
 
 roundtrip_possible() {
+	# A real (non-dry-run) install genuinely requires UEFI, so there is no point
+	# trying on a host without it.
+	[ -d /sys/firmware/efi ] || return 1
 	command -v losetup >/dev/null 2>&1 || return 1
 	command -v mkfs.vfat >/dev/null 2>&1 || return 1
 	losetup -f >/dev/null 2>&1 || return 1
@@ -115,7 +118,7 @@ if roundtrip_possible; then
 		skip "could not mount a loop device, so no install round trip"
 	fi
 else
-	skip "no loop device support, so no install round trip"
+	skip "not a UEFI host, or no loop device support, so no install round trip"
 fi
 
 printf '==> install guards passed\n'

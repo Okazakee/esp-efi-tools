@@ -89,7 +89,13 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # ------------------------------------------------------------------- preamble
 
 [ "$(id -u)" = 0 ] || die "must run as root (the ESP is normally root-only)"
-[ -d /sys/firmware/efi ] || die "not booted in UEFI mode - this tool is UEFI only"
+
+# A dry run writes nothing, so let it through on a non-UEFI host: that is the
+# only way to exercise the refusal paths in CI, which has no EFI. A real run
+# still refuses, because a real run does write.
+if [ ! -d /sys/firmware/efi ] && [ "$DRY_RUN" = 0 ]; then
+	die "not booted in UEFI mode - this tool is UEFI only"
+fi
 
 step "looking for the EFI System Partition"
 
