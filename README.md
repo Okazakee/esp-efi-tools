@@ -168,8 +168,9 @@ an EFI chainload. That is all the Limine entry does.
 ## Testing
 
 ```bash
-./test/consistency.sh    # seconds, no VM: do install.sh and the scripts agree?
-./test/smoke-test.sh     # boots OVMF in QEMU and drives the shell for real
+./test/consistency.sh      # seconds, no VM: do install.sh and the scripts agree?
+sudo ./test/install-guards.sh   # install.sh/uninstall.sh refuse the right things
+./test/smoke-test.sh       # boots OVMF in QEMU and drives the shell for real
 ```
 
 `smoke-test.sh` is the interesting one. It builds a FAT image exactly like your
@@ -181,8 +182,15 @@ The guest's "firmware" is `test/fake_flasher.c`: a 6-byte EFI application that
 does nothing (`mov eax; ret`). The test never ships, downloads or runs actual
 vendor firmware.
 
-CI runs `consistency.sh` on Ubuntu and the smoke test inside an Arch container,
-because Arch is the only common distribution that packages an EDK2 shell.
+`install-guards.sh` covers what a VM cannot reach: that automatic ESP detection
+refuses a path which is merely *inside* a mount rather than a mount point, and
+that a real install/uninstall round trip leaves the ESP as it found it. It is
+how the two bugs in the second commit were caught, both of which were invisible
+to the other tests and one of which produced a silently dead boot entry.
+
+CI runs `consistency.sh` and `install-guards.sh` on Ubuntu and the smoke test
+inside an Arch container, because Arch is the only common distribution that
+packages an EDK2 shell.
 
 ## Uninstall
 
