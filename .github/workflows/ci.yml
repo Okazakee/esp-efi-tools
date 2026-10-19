@@ -12,7 +12,7 @@ jobs:
   consistency:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
@@ -34,7 +34,7 @@ jobs:
       - name: Install git (needed by checkout)
         run: pacman -Sy --noconfirm --needed git
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
