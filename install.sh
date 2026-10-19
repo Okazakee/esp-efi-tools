@@ -20,6 +20,7 @@ EFI_DIR="EFI/$TOOL_DIRNAME"           # on the ESP, under \EFI\ (some firmware r
 DROP_DIR="$EFI_DIR/firmware"          # where the vendor flasher is dropped
 DROP_DIR_WIN="\\${DROP_DIR//\//\\}"   # the same path as the EFI shell sees it
 SHELL_REL="$EFI_DIR/Shellx64.efi"     # the EDK2 shell
+SHELL_REL_WIN="\\${SHELL_REL//\//\\}" # same path as a firmware boot entry wants it
 STARTUP_REL="startup.nsh"             # at the ESP root, so the shell auto-runs it
 DEFAULT_LABEL="esp-efi-tools"
 MIN_FREE_MB=32
@@ -92,27 +93,61 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 step "looking for the EFI System Partition"
 
-if [ -z "$ESP" ]; then
-	# Prefer the conventional mount points, then fall back to the GPT partition
-	# type GUID, which is the only authoritative definition.
+ESP_GUID="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
+
+# findmnt answers for ANY path by reporting the filesystem that contains it. So
+# on a machine where the ESP is mounted at /boot, "findmnt --target /boot/efi"
+# cheerfully answers "/boot" - which is how an earlier version of this script
+# ended up writing to <esp>/efi/EFI/esp-efi-tools/ while telling the firmware to
+# look in <esp>/EFI/esp-efi-tools/. Hence: a path is only usable if findmnt's
+# TARGET is that path itself.
+mount_target_of() {
+	findmnt -no TARGET --target "$1" 2>/dev/null || true
+}
+
+is_esp_mountpoint() {
+	local cand="$1" src
+	[ -d "$cand" ] || return 1
+	[ "$(mount_target_of "$cand")" = "$cand" ] || return 1
+	src="$(findmnt -no SOURCE --target "$cand" 2>/dev/null || true)"
+	[ -n "$src" ] || return 1
+	[ "$(lsblk -no PARTTYPE "$src" 2>/dev/null || true)" = "$ESP_GUID" ]
+}
+
+detect_esp() {
+	local cand src tgt fstype
+	# 1. a conventional mount point that really is a mount point, and really is
+	#    the ESP according to the GPT partition type GUID
 	for cand in /boot/efi /efi /boot; do
-		if findmnt -no FSTYPE --target "$cand" >/dev/null 2>&1; then
-			fstype="$(findmnt -no FSTYPE --target "$cand")"
-			src="$(findmnt -no SOURCE --target "$cand")"
-			parttype="$(lsblk -no PARTTYPE "$src" 2>/dev/null || true)"
-			if [ "$parttype" = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b" ]; then
-				ESP="$cand"
-				break
-			fi
-			# /boot being a plain vfat partition and the only candidate is a
-			# common layout (as on this author's machine); accept it as a hint
-			# only if it is the last resort.
-			if [ "$cand" = "/boot" ] && [ "$fstype" = "vfat" ]; then
-				ESP="$cand"
-				break
-			fi
+		if is_esp_mountpoint "$cand"; then
+			printf '%s' "$cand"
+			return 0
 		fi
 	done
+	# 2. any mounted FAT filesystem that is the ESP by GUID, wherever it is
+	while read -r src tgt; do
+		[ -n "$src" ] || continue
+		if [ "$(lsblk -no PARTTYPE "$src" 2>/dev/null || true)" = "$ESP_GUID" ]; then
+			printf '%s' "$tgt"
+			return 0
+		fi
+	done < <(findmnt -rno SOURCE,TARGET -t vfat,fat,msdos 2>/dev/null)
+	# 3. last resort: /boot itself, if it is a FAT mount point. Some images are
+	#    created without the ESP type GUID, and refusing those helps nobody.
+	if [ "$(mount_target_of /boot)" = "/boot" ]; then
+		fstype="$(findmnt -no FSTYPE --target /boot 2>/dev/null || true)"
+		case "$fstype" in
+		vfat | fat | msdos)
+			printf '%s' "/boot"
+			return 0
+			;;
+		esac
+	fi
+	return 1
+}
+
+if [ -z "$ESP" ]; then
+	ESP="$(detect_esp || true)"
 fi
 
 if [ -z "$ESP" ]; then
@@ -122,8 +157,11 @@ if [ -z "$ESP" ]; then
 fi
 
 [ -d "$ESP" ] || die "--esp path does not exist: $ESP"
-findmnt -no TARGET --target "$ESP" >/dev/null 2>&1 ||
-	die "$ESP is not a mount point. Mount it first, then re-run with --esp $ESP"
+
+# Must be the mount point itself, not merely somewhere under one. See the note
+# on mount_target_of above.
+[ "$(mount_target_of "$ESP")" = "$ESP" ] ||
+	die "$ESP is not itself a mount point (the filesystem there is mounted at $(mount_target_of "$ESP")). Mount it and re-run with --esp <mountpoint>."
 
 ESP_DEV="$(findmnt -no SOURCE --target "$ESP")"
 ESP_FS="$(findmnt -no FSTYPE --target "$ESP")"
@@ -265,10 +303,10 @@ if [ "$DO_BOOT_ENTRY" = 1 ]; then
 
 	if [ ! -d /sys/firmware/efi/efivars ]; then
 		warn "efivarfs not available; skipping. Add the entry yourself:"
-		warn "  \\$SHELL_REL"
+		warn "  $SHELL_REL_WIN"
 	elif ! command -v efibootmgr >/dev/null 2>&1; then
 		warn "efibootmgr not installed; skipping. Install it and add the entry:"
-		warn "  \\$SHELL_REL"
+		warn "  $SHELL_REL_WIN"
 	else
 		disk="$(lsblk -no PKNAME "$ESP_DEV" 2>/dev/null | head -1 || true)"
 		partnum="$(cat "/sys/class/block/$(basename "$ESP_DEV")/partition" 2>/dev/null || true)"
@@ -276,20 +314,23 @@ if [ "$DO_BOOT_ENTRY" = 1 ]; then
 		if [ -z "$disk" ] || [ -z "$partnum" ]; then
 			warn "could not work out which disk/partition $ESP_DEV is; skipping entry."
 		else
-			before="$(efibootmgr 2>/dev/null | sed -n 's/^\(Boot[0-9A-Fa-f]\{4\}\).*/\1/p' | sort || true)"
+			before="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\).*/\1/p' | sort || true)"
 			old_order="$(efibootmgr 2>/dev/null | sed -n 's/^BootOrder:[[:space:]]*//p' | tr -d ' ' || true)"
 
 			if [ "$DRY_RUN" = 1 ]; then
-				printf '  [dry-run] efibootmgr -c -d /dev/%s -p %s -l "\\%s" -L "%s"\n' \
-					"$disk" "$partnum" "$SHELL_REL" "$LABEL"
+				printf '  [dry-run] efibootmgr -c -d /dev/%s -p %s -l "%s" -L "%s"\n' \
+					"$disk" "$partnum" "$SHELL_REL_WIN" "$LABEL"
 			else
 				efibootmgr -c -d "/dev/$disk" -p "$partnum" \
-					-l "\\$SHELL_REL" -L "$LABEL" >/dev/null ||
+					-l "$SHELL_REL_WIN" -L "$LABEL" >/dev/null ||
 					warn "efibootmgr failed to create the entry"
 			fi
 
 			if [ "$DRY_RUN" = 0 ]; then
-				after="$(efibootmgr 2>/dev/null | sed -n 's/^\(Boot[0-9A-Fa-f]\{4\}\).*/\1/p' | sort || true)"
+				# IDs are bare 4-digit hex: "0006", not "Boot0006". Passing the
+				# prefixed form to -o is rejected and the order never gets
+				# restored, which leaves the machine booting this shell first.
+				after="$(efibootmgr 2>/dev/null | sed -n 's/^Boot\([0-9A-Fa-f]\{4\}\).*/\1/p' | sort || true)"
 				new_id="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | head -1 || true)"
 
 				if [ -n "$new_id" ]; then
@@ -300,7 +341,7 @@ if [ "$DO_BOOT_ENTRY" = 1 ]; then
 						efibootmgr -o "${old_order},${new_id}" >/dev/null ||
 							warn "could not restore BootOrder; check 'efibootmgr' by hand" 
 					fi
-					say "    entry $new_id \"$LABEL\" -> \\$SHELL_REL"
+					say "    entry $new_id \"$LABEL\" -> $SHELL_REL_WIN"
 					say "    boot order restored: $(efibootmgr | sed -n 's/^BootOrder:[[:space:]]*/&/p')"
 				else
 					warn "created the entry but could not identify it to fix BootOrder."

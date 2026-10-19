@@ -83,6 +83,20 @@ grep -qE 'vfat \| fat \| msdos\)' install.sh ||
 	fail "install.sh no longer restricts the ESP to FAT"
 ok "install.sh still requires a FAT ESP"
 
+# --- efibootmgr boot ID handling --------------------------------------------
+
+# efibootmgr -o wants bare IDs ("0006"), but its own listings print "Boot0006".
+# install.sh has to strip the prefix, or BootOrder silently never gets restored
+# and the machine is left booting the EFI shell ahead of the OS. This exercises
+# the exact expression install.sh uses, against a realistic listing line.
+id_expr="$(grep -m1 -oE "s/\^Boot[^ '\"]*" install.sh || true)"
+[ -n "$id_expr" ] ||
+	fail "install.sh no longer extracts bare boot IDs from efibootmgr output"
+id="$(sed -n "$id_expr" <<<"Boot0006* esp-efi-tools")"
+[ "$id" = "0006" ] ||
+	fail "install.sh's boot ID extraction produced '$id', expected '0006'"
+ok "boot IDs are stripped to the bare form (0006, not Boot0006)"
+
 # --- optional lint ----------------------------------------------------------
 
 if command -v shellcheck >/dev/null 2>&1; then

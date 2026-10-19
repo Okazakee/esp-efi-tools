@@ -20,6 +20,10 @@ jobs:
       - name: Consistency checks
         run: ./test/consistency.sh
 
+      # install.sh refuses to run as a non-root user, so these need sudo.
+      - name: Install guards
+        run: sudo ./test/install-guards.sh
+
   # The real thing: boot OVMF in QEMU, run the scripts, assert the chain works.
   #
   # This runs in an Arch container on purpose. The smoke test cannot start a
