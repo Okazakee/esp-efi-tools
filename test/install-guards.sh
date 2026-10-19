@@ -131,6 +131,31 @@ if roundtrip_possible; then
 		done
 		ok "install.sh placed every expected file"
 
+		# --check is what a user runs before rebooting, so it has to be honest.
+		# The case that matters most is more than one flasher staged, because
+		# flash.nsh runs every .efi it finds.
+		drop="$MNT/EFI/esp-efi-tools/firmware"
+
+		check_out="$(./install.sh --esp "$MNT" --check 2>&1)" ||
+			fail "--check exited non-zero"
+		grep -qF "NOT READY" <<<"$check_out" ||
+			fail "--check claimed READY with nothing staged"
+		ok "--check says NOT READY when no flasher is staged"
+
+		: >"$drop/one.efi"
+		check_out="$(./install.sh --esp "$MNT" --check 2>&1)"
+		grep -qF "one.efi" <<<"$check_out" ||
+			fail "--check did not report a staged flasher"
+		ok "--check reports the staged flasher by name"
+
+		: >"$drop/two.efi"
+		check_out="$(./install.sh --esp "$MNT" --check 2>&1)"
+		grep -qF "must be exactly one" <<<"$check_out" ||
+			fail "--check did not flag two staged flashers"
+		ok "--check flags more than one flasher"
+
+		rm -f "$drop/one.efi" "$drop/two.efi"
+
 		./uninstall.sh --esp "$MNT" >/dev/null || fail "uninstall.sh failed"
 		[ ! -e "$MNT/EFI/esp-efi-tools" ] || fail "uninstall.sh left the tool directory"
 		[ ! -e "$MNT/startup.nsh" ] || fail "uninstall.sh left startup.nsh"

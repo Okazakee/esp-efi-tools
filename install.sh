@@ -34,6 +34,7 @@ DO_BOOT_ENTRY=1
 DO_LIMINE=0
 QUIET=0
 SHELL_OVERRIDE=""
+CHECK_ONLY=0
 
 usage() {
 	sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
@@ -44,6 +45,7 @@ usage() {
 	  --esp PATH        ESP mount point (default: auto-detect)
 	  --label NAME      boot entry label (default: esp-efi-tools)
 	  --shell PATH      EDK2 shell to install (default: from a distribution package)
+	  --check           report whether an install is ready to use, change nothing
 	  --no-boot-entry   place the files but do not add a firmware boot entry
 	  --limine          also add a Limine entry (needs limine-entry-tool)
 	  --dry-run         show what would happen, change nothing
@@ -59,6 +61,7 @@ while [ $# -gt 0 ]; do
 	--esp) ESP="${2:-}"; shift 2 ;;
 	--label) LABEL="${2:-}"; shift 2 ;;
 	--shell) SHELL_OVERRIDE="${2:-}"; shift 2 ;;
+	--check) CHECK_ONLY=1; DRY_RUN=1; shift ;;
 	--no-boot-entry) DO_BOOT_ENTRY=0; shift ;;
 	--limine) DO_LIMINE=1; shift ;;
 	--dry-run) DRY_RUN=1; shift ;;
@@ -209,6 +212,103 @@ if [ "${sb:-0}" = 1 ]; then
 	warn "(Limine v12 panics without one), and some firmware refuses unsigned"
 	warn "chainloads outright. If the entry does not work, either disable Secure"
 	warn "Boot for the update or add the hash your bootloader wants."
+fi
+
+# -------------------------------------------------------------------- --check
+
+mark() { [ "$1" = 1 ] && printf 'ok      ' || printf 'MISSING '; }
+
+report_check() {
+	local shell_ok=0 startup_ok=0 flash_ok=0 entry_ok=0 limine_ok=0
+	local flashers="" count=0 name=""
+	local esp_guid="" entries="" hits="" entry_note=""
+
+	[ -f "$ESP/$SHELL_REL" ] && shell_ok=1
+	if [ -f "$ESP/$STARTUP_REL" ] && grep -q 'esp-efi-tools' "$ESP/$STARTUP_REL" 2>/dev/null; then
+		startup_ok=1
+	fi
+	[ -f "$ESP/$DROP_DIR/flash.nsh" ] && flash_ok=1
+
+	# The drop folder must hold exactly ONE flasher, because flash.nsh runs every
+	# .efi it finds. Two would mean two flashes, which is the whole reason this
+	# is worth checking before a reboot instead of after.
+	flashers="$(find "$ESP/$DROP_DIR" -maxdepth 1 -type f -iname '*.efi' -printf '%f\n' 2>/dev/null | sort || true)"
+	if [ -n "$flashers" ]; then
+		count="$(printf '%s\n' "$flashers" | wc -l | tr -d ' ')"
+		name="$(printf '%s\n' "$flashers" | head -1)"
+	fi
+
+	# Match the loader path rather than the label: that is what the firmware
+	# actually has to find. Scope it to THIS ESP's partition GUID too, otherwise
+	# checking some other ESP would report the host's own entry as if it were
+	# installed there.
+	if command -v efibootmgr >/dev/null 2>&1 && [ -d /sys/firmware/efi/efivars ]; then
+		esp_guid="$(lsblk -no PARTUUID "$ESP_DEV" 2>/dev/null | head -1 || true)"
+		entries="$(efibootmgr 2>/dev/null || true)"
+		if [ -n "$esp_guid" ]; then
+			hits="$(printf '%s\n' "$entries" | grep -iF -- "$esp_guid" | grep -F -- "$SHELL_REL_WIN" || true)"
+		else
+			# Whole-disk ESP, or a raw FAT image: no partition GUID to scope by,
+			# so any entry with the right path counts. Say so, rather than
+			# implying this was verified against the device being checked.
+			entry_note=" (unscoped: $ESP_DEV has no partition GUID)"
+			hits="$(printf '%s\n' "$entries" | grep -F -- "$SHELL_REL_WIN" || true)"
+		fi
+		[ -n "$hits" ] && entry_ok=1
+	fi
+	if [ -f "$ESP/limine.conf" ] && grep -qF -- "boot():/$SHELL_REL" "$ESP/limine.conf"; then
+		limine_ok=1
+	fi
+
+	printf '\n'
+	printf '  %-17s %s\n' "ESP" "$ESP ($ESP_DEV, ${free_mb}MB free)"
+	printf '  %-17s %s %s\n' "EFI shell" "$(mark "$shell_ok")" "$SHELL_REL"
+	printf '  %-17s %s %s\n' "startup.nsh" "$(mark "$startup_ok")" "$STARTUP_REL"
+	printf '  %-17s %s %s\n' "flash.nsh" "$(mark "$flash_ok")" "$DROP_DIR/flash.nsh"
+	case "$count" in
+	1)
+		printf '  %-17s %s %s\n' "flasher staged" "$(mark 1)" "$name"
+		;;
+	0)
+		printf '  %-17s %s none, put a vendor .efi into %s\n' "flasher staged" "$(mark 0)" "$DROP_DIR"
+		;;
+	*)
+		printf '  %-17s %s %s found, must be exactly one: %s\n' "flasher staged" \
+			"$(mark 0)" "$count" "$(printf '%s' "$flashers" | tr '\n' ' ')"
+		;;
+	esac
+	printf '  %-17s %s %s%s\n' "firmware entry" "$(mark "$entry_ok")" "$SHELL_REL_WIN" "$entry_note"
+	printf '  %-17s %s %s\n' "Limine entry" "$(mark "$limine_ok")" "boot():/$SHELL_REL"
+	if [ "${sb:-0}" = 1 ]; then
+		printf '  %-17s %s\n' "Secure Boot" "ON (may block an unsigned chainload)"
+	else
+		printf '  %-17s %s\n' "Secure Boot" "off"
+	fi
+	printf '\n'
+
+	# Ready when the launcher and the flasher are both in place, the drop folder
+	# is unambiguous, and there is at least one way in: firmware entry or Limine.
+	if [ "$shell_ok" = 1 ] && [ "$startup_ok" = 1 ] && [ "$flash_ok" = 1 ] &&
+		[ "$count" = 1 ] && { [ "$entry_ok" = 1 ] || [ "$limine_ok" = 1 ]; }; then
+		printf 'READY. Reboot and pick "%s" from the boot menu, then type:\n\n' "$LABEL"
+		printf '    flash.nsh\n\n'
+		printf 'Nothing is flashed until you type that. "exit" goes back without flashing.\n'
+	else
+		printf 'NOT READY - see the MISSING line(s) above.\n'
+		if [ "$count" = 0 ]; then
+			printf '  Drop your vendor'"'"'s flasher (.efi) into %s\n' "$ESP/$DROP_DIR"
+		fi
+		if [ "$entry_ok" = 0 ] && [ "$limine_ok" = 0 ]; then
+			printf '  No way in: neither a firmware entry nor a Limine entry was found.\n'
+		fi
+		printf '  Re-run: sudo %s\n' "$0"
+	fi
+}
+
+if [ "$CHECK_ONLY" = 1 ]; then
+	step "checking an existing install"
+	report_check
+	exit 0
 fi
 
 # ------------------------------------------------------------------ the shell

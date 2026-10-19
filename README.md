@@ -70,6 +70,7 @@ Useful flags:
 ```
 --esp PATH       ESP mount point, if auto-detection is wrong
 --shell PATH     use a specific EDK2 shell
+--check          report whether everything is ready to use; changes nothing
 --limine         also add a Limine entry via limine-entry-tool
 --no-boot-entry  place the files only; add the boot entry yourself
 ```
@@ -83,6 +84,28 @@ only `.efi` in there:
 sudo rm -f /boot/EFI/esp-efi-tools/firmware/*.efi
 sudo cp XxSP4xxxN122A24_CAP.efi /boot/EFI/esp-efi-tools/firmware/
 ```
+
+Then confirm it is ready *before* you reboot:
+
+```bash
+sudo ./install.sh --check
+```
+
+That prints one line per requirement and a READY / NOT READY verdict:
+
+```
+  ESP               /boot (/dev/nvme0n1p1, 1663MB free)
+  EFI shell         ok       EFI/esp-efi-tools/Shellx64.efi
+  startup.nsh       ok       startup.nsh
+  flash.nsh         ok       EFI/esp-efi-tools/firmware/flash.nsh
+  flasher staged    ok       XxSP4xxxN122A24_CAP.efi
+  firmware entry    ok       \EFI\esp-efi-tools\Shellx64.efi
+  Limine entry      ok       boot():/EFI/esp-efi-tools/Shellx64.efi
+  Secure Boot       off
+```
+
+Worth doing every time, because the failure it catches — **two `.efi` files in the
+drop folder, which means two flashes** — is invisible from the boot menu.
 
 **2.** Reboot and pick `esp-efi-tools` from your boot menu. The shell lands you in
 the drop folder and lists it.
