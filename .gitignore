@@ -1,0 +1,14 @@
+# Build artefacts of the test fixture
+*.o
+*.efi
+!files/*.nsh
+
+# QEMU/OVMF scratch files
+*.img
+*.log
+OVMF_VARS*.fd
+
+# Editors
+*.swp
+.vscode/
+.idea/

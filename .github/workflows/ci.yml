@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Fast, VM-free: does install.sh agree with the .nsh scripts about where
+  # everything lives? Runs anywhere, so it is the job that should always report.
+  consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Consistency checks
+        run: ./test/consistency.sh
+
+  # The real thing: boot OVMF in QEMU, run the scripts, assert the chain works.
+  #
+  # This runs in an Arch container on purpose. The smoke test cannot start a
+  # guest without an EDK2 UEFI shell, and Arch is the only common distribution
+  # that packages one (edk2-shell). Debian and Ubuntu do not ship one at all -
+  # their ovmf package contains firmware blobs only - so an ubuntu-latest job
+  # would have nothing to boot.
+  smoke-test:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install git (needed by checkout)
+        run: pacman -Sy --noconfirm --needed git
+
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          pacman -S --noconfirm --needed \
+            qemu-system-x86 ovmf edk2-shell mtools dosfstools clang lld
+
+      - name: Smoke test (boots firmware, drives the shell)
+        run: ./test/smoke-test.sh --verbose
